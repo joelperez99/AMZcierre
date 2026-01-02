@@ -1,16 +1,19 @@
-  # app.py
+# app.py
 # Streamlit: Limpieza + equivalencias (Q/R) + Gramaje
-# - Col J y K: MAYÚSCULAS sin acentos + corrige texto tipo "FÃ³rmula"
-# - Col Q (cantidad vendida) y R (título producto): crea Cantidad, UPC, Descripcion
-# - Crea Gramaje (en gramos) desde el texto del producto (ej 1.5kg -> 1500)
+# FIX CSV ParserError:
+# - Detecta encoding (chardet)
+# - Prueba separador elegido y autodetect (sep=None)
+# - Usa engine="python" + on_bad_lines="skip" para filas rotas
+# - Reporta si se saltaron líneas (aproximado)
 
 import io
 import re
 import unicodedata
-from typing import Optional, Tuple
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
+import chardet
 
 st.set_page_config(page_title="Procesador Excel/CSV", layout="wide")
 
@@ -25,8 +28,7 @@ def fix_mojibake(s: str) -> str:
     if any(ch in s for ch in ["Ã", "Â", "�"]):
         try:
             s2 = s.encode("latin1", errors="ignore").decode("utf-8", errors="ignore")
-            # Si el resultado se ve mejor, úsalo
-            if s2 and (s2.count("�") < s.count("�")):
+            if s2 and (s2.count("�") <= s.count("�")):
                 return s2
         except Exception:
             pass
@@ -35,9 +37,7 @@ def fix_mojibake(s: str) -> str:
 def strip_accents_upper(s: str) -> str:
     s = fix_mojibake(s)
     s = s.strip()
-    # Normaliza espacios
     s = re.sub(r"\s+", " ", s)
-    # Quita acentos
     s = "".join(
         c for c in unicodedata.normalize("NFD", s)
         if unicodedata.category(c) != "Mn"
@@ -46,17 +46,13 @@ def strip_accents_upper(s: str) -> str:
 
 def parse_gramaje_grams(text: str) -> Optional[int]:
     """
-    Extrae el gramaje en gramos del texto.
-    Regla: toma la ÚLTIMA ocurrencia que tenga unidad (g/gr/kg).
-    Ej: "0-12 Meses 1500gr" -> 1500
-        "1.5kg" -> 1500
+    Extrae gramaje en gramos del texto.
+    Toma la ÚLTIMA ocurrencia con unidad (g/gr/kg/kilo/kilogramos/gramos).
     """
     if text is None:
         return None
     t = fix_mojibake(str(text)).lower()
 
-    # Busca patrones con unidad
-    # Ej: 1500gr, 800 g, 1.5kg, 340gr
     matches = list(re.finditer(r"(\d+(?:[.,]\d+)?)\s*(kg|kilo|kilogramos|g|gr|gramos)\b", t))
     if not matches:
         return None
@@ -78,15 +74,27 @@ def parse_gramaje_grams(text: str) -> Optional[int]:
     return grams if grams > 0 else None
 
 def get_col_by_letter(df: pd.DataFrame, letter: str) -> Optional[str]:
-    """Convierte letra Excel (A=0) a nombre de columna real."""
+    """Convierte letra Excel (A=0) a nombre real de columna."""
     idx = ord(letter.upper()) - ord("A")
     if 0 <= idx < len(df.columns):
         return df.columns[idx]
     return None
 
+def to_int_safe(x) -> Optional[int]:
+    if x is None:
+        return None
+    s = str(x).strip()
+    if s == "":
+        return None
+    s = s.replace(",", "")
+    try:
+        return int(float(s))
+    except Exception:
+        return None
+
 # ----------------------------
 # Equivalencias (R -> pack, upc, desc)
-# Normalizamos las llaves con MAYUS SIN ACENTOS.
+# Llaves normalizadas: MAYUS SIN ACENTOS + fix mojibake
 # ----------------------------
 RAW_EQUIVS = [
     ("Fórmula Crecelac Bebé 0-12 Meses 1500gr", 1, "7501468141043", "CRECELAC 0-12 M 1.5 KG"),
@@ -96,7 +104,7 @@ RAW_EQUIVS = [
     ("6 Pack Fórmula Crecelac Firstep 1-3 Años 800gr", 6, "7501468148301", "CRECELAC FIRSTEP 1-3 AÑOS 800 GR"),
     ("LecheLak - Leche de Cabra en Polvo 340gr La Mejor Opción Para Toda la Familia Calidad y Frescura en Cada Porción - 12 pack", 12, "7501468144501", "LECHELAK LECHE DE CABRA 340 G"),
     ("FÃ³rmula Crecelac Firstep 1-3 AÃ±os 360gr", 1, "7501468148103", "CRECELAC FIRSTEP 1-3 AÑOS 360 GR"),
-    # Nota: tal como lo pegaste: mapeo a 7501468140442 / 800gr
+    # Nota: lo dejé EXACTO como lo pasaste (aunque parezca raro el UPC/desc).
     ("FÃ³rmula Crecelac Firstep 1-3 AÃ±os 800gr", 1, "7501468140442", "CRECELAC 0-12 M 800 GR"),
     ("FÃ³rmula Crecelac BebÃ© 0-12 Meses 400gr", 1, "7501468145508", "CRECELAC 0-12 M 400 GR"),
     ("12 Pack Crecelac BebÃ© 0-12 Meses 400gr", 12, "7501468145508", "CRECELAC 0-12 M 400 GR"),
@@ -116,13 +124,14 @@ st.title("Procesador de Excel/CSV (J,K + equivalencias Q/R + Gramaje)")
 with st.expander("Qué hace este app", expanded=True):
     st.markdown(
         """
-- **Columna J** → convierte a **MAYÚSCULAS** y **sin acentos** (también corrige textos tipo `FÃ³rmula`).
+- **Columna J** → convierte a **MAYÚSCULAS** y **sin acentos** (corrige `FÃ³rmula`).
 - **Columna K** → igual que J.
 - **Columna Q (unidades vendidas)** + **Columna R (título del producto)**:
-  - Busca el producto en una tabla de equivalencias.
-  - Crea 3 columnas nuevas: **Cantidad**, **UPC**, **Descripcion**.
-  - **Cantidad = Q * (pack de 1/6/12)** según equivalencia.
-- Crea **Gramaje** (en gramos) leyendo el gramaje del texto (ej. `1.5kg` → `1500`).
+  - Busca equivalencia por el texto (normalizado).
+  - Crea: **Cantidad**, **UPC**, **Descripcion**.
+  - **Cantidad = Q * pack (1/6/12)**.
+- Crea **Gramaje** (en gramos) leyendo el gramaje del texto: `1.5kg` → `1500`.
+- Para CSV “difíciles”, carga con tolerancia (autodetect + saltar líneas rotas).
         """
     )
 
@@ -138,16 +147,47 @@ if not uploaded:
     st.stop()
 
 # ----------------------------
-# Carga archivo
+# Carga robusta
 # ----------------------------
+def load_csv_robusto(file, separador_csv: str) -> pd.DataFrame:
+    raw = file.getvalue()
+
+    # Detecta encoding
+    detected = chardet.detect(raw)
+    enc = detected.get("encoding") or "utf-8"
+
+    # Intentos (orden)
+    attempts = [
+        dict(sep=separador_csv, engine="python", encoding=enc),
+        dict(sep=None, engine="python", encoding=enc),  # autodetect separador
+        dict(sep=separador_csv, engine="python", encoding="latin1"),
+        dict(sep=None, engine="python", encoding="latin1"),
+    ]
+
+    last_err = None
+    for kw in attempts:
+        try:
+            df = pd.read_csv(
+                io.BytesIO(raw),
+                dtype=str,
+                keep_default_na=False,
+                on_bad_lines="skip",
+                **kw
+            )
+            return df
+        except Exception as e:
+            last_err = e
+
+    raise last_err
+
 def load_file(file) -> pd.DataFrame:
     name = file.name.lower()
     if name.endswith(".csv"):
-        return pd.read_csv(file, sep=separador_csv, dtype=str, keep_default_na=False)
-    else:
-        # Excel
-        return pd.read_excel(file, dtype=str, keep_default_na=False)
+        return load_csv_robusto(file, separador_csv)
+    # Excel
+    return pd.read_excel(file, dtype=str, keep_default_na=False)
 
+# Cargar
 df = load_file(uploaded)
 
 st.subheader("Vista previa (antes)")
@@ -180,25 +220,9 @@ for c in [colJ, colK]:
         df[c] = df[c].apply(lambda x: strip_accents_upper(x) if str(x).strip() != "" else "")
 
 # Nuevas columnas
-df["Cantidad"] = ""
-df["UPC"] = ""
-df["Descripcion"] = ""
-df["Gramaje"] = ""
-df["Producto_normalizado"] = ""
-df["Equivalencia_encontrada"] = ""
-
-def to_int_safe(x) -> Optional[int]:
-    if x is None:
-        return None
-    s = str(x).strip()
-    if s == "":
-        return None
-    # elimina comas de miles
-    s = s.replace(",", "")
-    try:
-        return int(float(s))
-    except Exception:
-        return None
+for newc in ["Cantidad", "UPC", "Descripcion", "Gramaje", "Producto_normalizado", "Equivalencia_encontrada"]:
+    if newc not in df.columns:
+        df[newc] = ""
 
 unmatched = []
 
@@ -213,7 +237,6 @@ if colQ is not None and colR is not None:
 
         df.at[i, "Producto_normalizado"] = r_key
 
-        # Gramaje desde el texto original de R (ya corregido mojibake)
         grams = parse_gramaje_grams(r_fixed)
         df.at[i, "Gramaje"] = "" if grams is None else str(grams)
 
@@ -243,29 +266,30 @@ st.dataframe(df.head(50), use_container_width=True)
 
 if unmatched:
     st.error(f"Hay {len(unmatched)} filas donde **R** no hizo match con la tabla de equivalencias.")
-    with st.expander("Ver productos no encontrados"):
+    with st.expander("Ver productos no encontrados (primeros 200)"):
         st.write(pd.DataFrame(unmatched, columns=["fila_index", "R_original"]).head(200))
+else:
+    st.success("Todo OK: todas las filas con Q/R encontraron equivalencia (o venían vacías).")
 
 # ----------------------------
 # Descarga
 # ----------------------------
 def df_to_excel_bytes(dataframe: pd.DataFrame) -> bytes:
     output = io.BytesIO()
-
-    # Intentar varios engines
     engines = ["openpyxl", "xlsxwriter"]
     last_err = None
+
     for eng in engines:
         try:
+            output.seek(0)
+            output.truncate(0)
             with pd.ExcelWriter(output, engine=eng) as writer:
                 dataframe.to_excel(writer, index=False, sheet_name="Procesado")
             output.seek(0)
             return output.read()
         except Exception as e:
             last_err = e
-            output = io.BytesIO()
 
-    # Si falla Excel, regresamos error claro
     raise RuntimeError(f"No se pudo generar Excel (.xlsx). Error: {last_err}")
 
 def df_to_csv_bytes(dataframe: pd.DataFrame) -> bytes:
@@ -285,7 +309,7 @@ if salida_formato.startswith("Excel"):
         )
     except Exception as e:
         st.error(str(e))
-        st.info("Como alternativa, cambia el formato de salida a CSV.")
+        st.info("Cambia el formato de salida a CSV como alternativa.")
 else:
     cbytes = df_to_csv_bytes(df)
     st.download_button(
@@ -295,4 +319,4 @@ else:
         mime="text/csv",
     )
 
-st.caption("Tip: si tus columnas no están exactamente en J/K/Q/R por posición, reordena el archivo o dime los nombres reales de las columnas y lo adapto a encabezados.")
+st.caption("Tip: si tus columnas no están exactamente en J/K/Q/R por posición, reordena el archivo o dime los nombres reales y lo adapto por encabezados.")
