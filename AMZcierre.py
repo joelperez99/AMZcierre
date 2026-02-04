@@ -111,6 +111,7 @@ RAW_EQUIVS = [
     ("Fórmula Crecelac Firstep 1-3 Años (360gr)", 1, "7501468148103", "CRECELAC FIRSTEP 1-3 AÑOS 360 GR"),
     ("Fórmula Crecelac Bebé 0-12 Meses (400gr)", 1, "7501468145508", "CRECELAC 0-12 M 400 GR"),
     ("Fórmula Crecelac Firstep 1-3 Años (800gr)", 1, "7501468148301", "CRECELAC FIRSTEP 1-3 AÑOS 800 GR"),
+    ("6 Pack Fórmula Crecelac Bebé 0-12 Meses 1500gr", 6, "7501468141043", "CRECELAC 0-12 M 1.5 KG"),
 ]
 
 EQUIV = {}
